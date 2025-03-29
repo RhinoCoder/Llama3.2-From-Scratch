@@ -1,1 +1,1 @@
-![lama-picture](https://github.com/user-attachments/assets/684a3d93-e9c7-4e05-950c-f90e8438b32f)
+![image](https://github.com/user-attachments/assets/933f097c-8bd8-4f51-9a3d-732ef5ba035d)
