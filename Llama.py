@@ -4,6 +4,7 @@ import json
 import matplotlib.pyplot as plt
 import platform
 
+from torch.nn.functional import rms_norm
 from torch.utils.backcompat import keepdim_warning
 from tiktoken.load import load_tiktoken_bpe
 from pathlib import Path
@@ -25,7 +26,7 @@ def displayQkHeatmap(qkPerToken,promptSplitAsTokens):
     ax.set_yticklabels(promptSplitAsTokens)
     ax.figure.colorbar(im, ax=ax)
     plt.title("Q-K Attention Heatmap")
-    plt.show()
+    #plt.show()
 
 
 
@@ -40,7 +41,7 @@ def main():
     print("|---------------------|")
     print("|LLAMA3.2 FROM SCRATCH|")
     print("|_____________________|")
-    print("Current OS:" + currentOS)
+    print(f"Current OS:{currentOS}")
 
     #1
     tokenizer_path = tokenizerPath
@@ -77,7 +78,7 @@ def main():
     else:
         device = torch.device("cpu")
 
-    print(device)
+    print(f"Device:{device}")
     model = torch.load(modelPath+"/consolidated.00-002.pth",map_location=device)
     print(json.dumps(list(model.keys())[:20], indent=4))
 
@@ -99,7 +100,7 @@ def main():
 
     #6
     #Converting text to tokens.
-    prompt = "The answer to the ultimate question of life, the universe, and everything is "
+    prompt = "the answer to the ultimate question of life, the universe, and everything is "
     tokens = [128000] + tokenizer.encode(prompt)
     print(tokens)
     tokens = torch.tensor(tokens)
@@ -181,7 +182,7 @@ def main():
     plt.xlabel('Real')
     plt.ylabel('Imaginary')
     plt.title('Plot of the one row of frequenciesCis')
-    plt.show()
+    #plt.show()
 
     #16
     qPerTokenAsComplexNumbers = torch.view_as_complex(qPerTokenSplitIntoPairs)
@@ -260,17 +261,148 @@ def main():
     qkvAttention = torch.matmul(qkPerTokenAfterMaskingAfterSoftmax,vPerToken)
     print(qkvAttention.shape)
 
+    #WE NOW HAVE THE ATTENTION VALUE OF
     #28 Multi head attention
     qkvAttentionStore = []
     for head in range(numberOfAttentionHeads):
         qLayer0Head = qLayer0[head]
         kLayer0Head = kLayer0[head//4]
         vLayer0Head = vLayer0[head//4]
+
         qPerToken = torch.matmul(tokenEmbeddings,qLayer0Head.T)
         kPerToken = torch.matmul(tokenEmbeddings,kLayer0Head.T)
         vPerToken = torch.matmul(tokenEmbeddings,vLayer0Head.T)
 
+        qPerTokenSplitIntoPairs = qPerToken.float().view(qPerToken.shape[0],-1,2)
+        qPerTokenAsComplexNumbers = torch.view_as_complex(qPerTokenSplitIntoPairs)
+        qPerTokenSplitIntoPairsRotated = torch.view_as_real(qPerTokenAsComplexNumbers * frequenciesCis[:len(tokens)])
+        qPerTokenRotated = qPerTokenSplitIntoPairsRotated.view(qPerToken.shape)
 
+        kPerTokenSplitIntoPairs = kPerToken.float().view(kPerToken.shape[0],-1,2)
+        kPerTokenAsComplexNumbers = torch.view_as_complex(kPerTokenSplitIntoPairs)
+        kPerTokenSplitIntoPairsRotated = torch.view_as_real(kPerTokenAsComplexNumbers * frequenciesCis[:len(tokens)])
+        kPerTokenRotated = kPerTokenSplitIntoPairsRotated.view(kPerToken.shape)
+
+        qkPerToken = (torch.matmul(qPerTokenRotated,kPerTokenRotated.T) / (128)**0.5).to(device)
+        mask = torch.full((len(tokens), len(tokens)), float("-inf"),device = tokens.device)
+        mask = torch.triu(mask,diagonal = 1)
+        mask = mask.to(device)
+        qkPerToken = qkPerToken.to(device)
+        qkPerTokenAfterMasking = qkPerToken + mask
+        qkPerTokenAfterMaskingAfterSoftmax = torch.nn.functional.softmax(qkPerTokenAfterMasking,dim=1).to(torch.bfloat16)
+        qkvAttention = torch.matmul(qkPerTokenAfterMaskingAfterSoftmax,vPerToken)
+        qkvAttention = torch.matmul(qkPerTokenAfterMaskingAfterSoftmax,vPerToken)
+        qkvAttentionStore.append(qkvAttention)
+
+
+    print("Len Of Attention Store: " + str(len(qkvAttentionStore)))
+
+
+    #27
+    stackedQkvAttention = torch.cat(qkvAttentionStore,dim=-1)
+    print("stackedQkvAttention.shape: "+str(stackedQkvAttention.shape))
+
+    #28
+    wLayer0 = model["layers.0.attention.wo.weight"]
+    print("wLayer0 shape:" + str(wLayer0.shape))
+
+    #29
+    embeddingDelta = torch.matmul(stackedQkvAttention,wLayer0.T).to(device)
+    print(embeddingDelta.shape)
+    tokenEmbeddingsUnnormalized = tokenEmbeddingsUnnormalized.to(device)
+    embeddingDelta = embeddingDelta.to(device)
+    embeddingAfterEdit = tokenEmbeddingsUnnormalized + embeddingDelta
+    print(embeddingAfterEdit.shape)
+
+    normalizedShape = model["layers.0.ffn_norm.weight"].shape
+    weight = model["layers.0.ffn_norm.weight"]
+    embeddingAfterEditNormalized = rms_norm(embeddingAfterEdit,normalizedShape,weight,eps=1e-5)
+    print(embeddingAfterEditNormalized.shape)
+
+    #30
+    w1 = model["layers.0.feed_forward.w1.weight"]
+    w2 = model["layers.0.feed_forward.w2.weight"]
+    w3 = model["layers.0.feed_forward.w3.weight"]
+    outputAfterFeedforward = torch.matmul(torch.functional.F.silu(torch.matmul(embeddingAfterEditNormalized,w1.T))* torch.matmul(embeddingAfterEditNormalized,w3.T), w2.T )
+    print("Output FF Shape: " + str(outputAfterFeedforward.shape))
+
+    layer0Embedding = embeddingAfterEdit + outputAfterFeedforward
+    print(layer0Embedding.shape)
+
+    #31 Now we have to do it for 31 more layers. We can use a for loop for all layers at once.
+    #Previous code block is to show, how would it be if we are to do it one layer.
+
+    finalEmbedding = tokenEmbeddingsUnnormalized
+
+    for layer in range(numberOfTransformerLayers):
+        qkvAttentionStore = []
+        weightAttentionNorm = model[f"layers.{layer}.attention_norm.weight"]
+        layerEmbeddingNorm = rms_norm(finalEmbedding, weightAttentionNorm.shape, weight=weightAttentionNorm, eps=1e-5)
+        qLayer = model[f"layers.{layer}.attention.wq.weight"]
+        qLayer = qLayer.view(numberOfAttentionHeads, qLayer.shape[0] // numberOfAttentionHeads, dim)
+        kLayer = model[f"layers.{layer}.attention.wk.weight"]
+        kLayer = kLayer.view(nKvHeads, kLayer.shape[0] // nKvHeads, dim)
+        vLayer = model[f"layers.{layer}.attention.wv.weight"]
+        vLayer = vLayer.view(nKvHeads, vLayer.shape[0] // nKvHeads, dim)
+
+        for head in range(numberOfAttentionHeads):
+            qLayerHead = qLayer[head]
+            kLayerHead = kLayer[head // 4]
+            vLayerHead = vLayer[head // 4]
+
+            qPerToken = torch.matmul(layerEmbeddingNorm, qLayerHead.T)
+            kPerToken = torch.matmul(layerEmbeddingNorm, kLayerHead.T)
+            vPerToken = torch.matmul(layerEmbeddingNorm, vLayerHead.T)
+
+            qPerTokenSplitIntoPairs = qPerToken.float().view(qPerToken.shape[0], -1, 2)
+            qPerTokenAsComplexNumbers = torch.view_as_complex(qPerTokenSplitIntoPairs)
+            qPerTokenSplitIntoPairsRotated = torch.view_as_real(qPerTokenAsComplexNumbers * frequenciesCis)
+            qPerTokenRotated = qPerTokenSplitIntoPairsRotated.view(qPerToken.shape)
+
+            kPerTokenSplitIntoPairs = kPerToken.float().view(kPerToken.shape[0], -1, 2)
+            kPerTokenAsComplexNumbers = torch.view_as_complex(kPerTokenSplitIntoPairs)
+            kPerTokenSplitIntoPairsRotated = torch.view_as_real(kPerTokenAsComplexNumbers * frequenciesCis)
+            kPerTokenRotated = kPerTokenSplitIntoPairsRotated.view(kPerToken.shape)
+
+            qkPerToken = torch.matmul(qPerTokenRotated, kPerTokenRotated.T) / (128) ** 0.5
+            mask = torch.full((len(tokenEmbeddingsUnnormalized), len(tokenEmbeddingsUnnormalized)), float("-inf"))
+            mask = torch.triu(mask, diagonal=1)
+            mask = mask.to(device)
+            qkPerTokenAfterMasking = qkPerToken + mask
+            qkPerTokenAfterMaskingAfterSoftmax = torch.nn.functional.softmax(qkPerTokenAfterMasking, dim=1).to(
+                torch.bfloat16)
+            qkvAttention = torch.matmul(qkPerTokenAfterMaskingAfterSoftmax, vPerToken)
+            qkvAttentionStore.append(qkvAttention)
+
+        stackedQkvAttention = torch.cat(qkvAttentionStore, dim=-1)
+        wLayer = model[f"layers.{layer}.attention.wo.weight"]
+        embeddingDelta = torch.matmul(stackedQkvAttention, wLayer.T)
+        embeddingAfterEdit = finalEmbedding + embeddingDelta
+        weightFfnNorm = model[f"layers.{layer}.ffn_norm.weight"]
+        embeddingAfterEditNormalized = rms_norm(embeddingAfterEdit, weightFfnNorm.shape, weight=weightFfnNorm, eps=1e-5)
+
+        w1 = model[f"layers.{layer}.feed_forward.w1.weight"]
+        w2 = model[f"layers.{layer}.feed_forward.w2.weight"]
+        w3 = model[f"layers.{layer}.feed_forward.w3.weight"]
+        outputAfterFeedforward = torch.matmul(
+            torch.nn.functional.silu(torch.matmul(embeddingAfterEditNormalized, w1.T)) * torch.matmul(
+                embeddingAfterEditNormalized, w3.T), w2.T)
+        finalEmbedding = embeddingAfterEdit + outputAfterFeedforward
+
+    #32
+    finalEmbedding = rms_norm(finalEmbedding, model["norm.weight"].shape, model["norm.weight"], eps=1e-5)
+    print("Final Embedding Shape: " + str(finalEmbedding.shape))
+
+    #33
+    print(model["output.weight"].shape)
+
+    #34
+    logits = torch.matmul(finalEmbedding[-1],model["output.weight"].T)
+    print("Logits Shape: " + str(logits.shape))
+    nextToken = torch.argmax(logits,dim = -1)
+    print("Next token: " + str(nextToken))
+    decoded = tokenizer.decode([nextToken.item()])
+    print(decoded)
 
 
 
