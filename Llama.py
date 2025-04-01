@@ -10,10 +10,15 @@ from tiktoken.load import load_tiktoken_bpe
 from pathlib import Path
 
 
+def RmsNorm(tensor, normWeights,device):
+    rms = torch.rsqrt(tensor.pow(2).mean(-1, keepdim=True) + 1e-5).to(device)
+    return tensor * rms * normWeights
 
-
+"""
 def RmsNorm(tensor,normWeights):
     return (tensor * torch.rsqrt(tensor.pow(2).mean(-1,keepdim=True)))
+"""
+
 
 
 def displayQkHeatmap(qkPerToken,promptSplitAsTokens):
