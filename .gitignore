@@ -8,7 +8,8 @@ venv/
 env/
 
 # Ignore the llama directory
-llama/
+llama/*
 checkpoints/
 Llama3.2-1B/
 /llama/checkpoints/Llama3.2-1B/
+/llama\checkpoints\Llama3.2-1B

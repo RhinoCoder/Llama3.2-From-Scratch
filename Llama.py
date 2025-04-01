@@ -100,7 +100,11 @@ def main():
 
     #6
     #Converting text to tokens.
-    prompt = "the answer to the ultimate question of life, the universe, and everything is "
+    prompt = input("Enter your prompt text: ")
+    if prompt is None:
+        prompt = "the answer to the ultimate question of life, the universe, and everything is "
+
+
     tokens = [128000] + tokenizer.encode(prompt)
     print(tokens)
     tokens = torch.tensor(tokens)
@@ -160,7 +164,7 @@ def main():
     frequencies = 1.0 / (ropeTheta ** zeroToOneSplitInto64Parts)
     print("Frequencies: " + str(frequencies))
 
-    frequenciesForEachToken = torch.outer(torch.arange(17),frequencies)
+    frequenciesForEachToken = torch.outer(torch.arange(len(tokens)),frequencies)
     frequenciesCis = torch.polar(torch.ones_like(frequenciesForEachToken),frequenciesForEachToken)
     frequenciesCis = torch.polar(
         torch.ones_like(frequenciesForEachToken[:, :32]),  # Only take first 32 frequencies
@@ -172,10 +176,10 @@ def main():
 
 
 
+    value = frequenciesCis[min(3, len(tokens) - 1)]
 
-    value = frequenciesCis[3]
     plt.figure()
-    for i,element in enumerate(value[:17]):
+    for i,element in enumerate(value[:len(tokens)]):
         plt.plot([0,element.real],[0,element.imag],color='blue',linewidth=1,label=f"Index: {i}")
         plt.annotate(f"{i}",xy = (element.real,element.imag),color = 'red' )
 
@@ -402,7 +406,7 @@ def main():
     nextToken = torch.argmax(logits,dim = -1)
     print("Next token: " + str(nextToken))
     decoded = tokenizer.decode([nextToken.item()])
-    print(decoded)
+    print(f"Guessed next token:{decoded}")
 
 
 
