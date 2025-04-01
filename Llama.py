@@ -11,6 +11,13 @@ from tiktoken.load import load_tiktoken_bpe
 from pathlib import Path
 
 
+def precompute_freqs_cis(head_dim, seq_len, device, rope_theta):
+    dim_rotary = head_dim // 2
+    inv_freq = 1.0 / (rope_theta ** (torch.arange(0, dim_rotary, device=device).float() / dim_rotary))
+    t = torch.arange(seq_len, device=device).float()
+    freqs = torch.einsum("i,j->ij", t, inv_freq)
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+    return freqs_cis
 
 def RmsNorm(tensor, normWeights, eps):
     normWeights = normWeights.to(tensor.device)
@@ -110,9 +117,12 @@ def main():
 
     #6
     #Converting text to tokens.
+    #Benchmark prompt, it should print out 42, for the sentence below.
+    #prompt = "the answer to the ultimate question of life, the universe, and everything is "
     prompt = input("Enter your prompt text: ")
     if prompt is None:
         prompt = "the answer to the ultimate question of life, the universe, and everything is "
+
 
 
     tokens = [128000] + tokenizer.encode(prompt)
@@ -345,7 +355,14 @@ def main():
 
     #31 Now we have to do it for 31 more layers. We can use a for loop for all layers at once.
     #Previous code block is to show, how would it be if we are to do it one layer.
+    device = tokenEmbeddingsUnnormalized.device
+    seq_len = len(tokens)
+    dim = 2048
+    n_heads = 32
+    head_dim = dim // n_heads
+    rope_theta = 500000.0
 
+    freqs_cis = precompute_freqs_cis(head_dim, seq_len, device, rope_theta)
     finalEmbedding = tokenEmbeddingsUnnormalized
 
     for layer in range(numberOfTransformerLayers):
@@ -370,21 +387,21 @@ def main():
 
             qPerTokenSplitIntoPairs = qPerToken.float().view(qPerToken.shape[0], -1, 2)
             qPerTokenAsComplexNumbers = torch.view_as_complex(qPerTokenSplitIntoPairs)
-            qPerTokenSplitIntoPairsRotated = torch.view_as_real(qPerTokenAsComplexNumbers * frequenciesCis)
+            freqs_q = freqs_cis[:qPerToken.shape[0], :].to(qPerToken.device)
+            qPerTokenSplitIntoPairsRotated = torch.view_as_real(qPerTokenAsComplexNumbers * freqs_q)
             qPerTokenRotated = qPerTokenSplitIntoPairsRotated.view(qPerToken.shape)
 
             kPerTokenSplitIntoPairs = kPerToken.float().view(kPerToken.shape[0], -1, 2)
             kPerTokenAsComplexNumbers = torch.view_as_complex(kPerTokenSplitIntoPairs)
-            kPerTokenSplitIntoPairsRotated = torch.view_as_real(kPerTokenAsComplexNumbers * frequenciesCis)
+            freqs_k = freqs_cis[:kPerToken.shape[0], :].to(kPerToken.device)
+            kPerTokenSplitIntoPairsRotated = torch.view_as_real(kPerTokenAsComplexNumbers * freqs_k)
             kPerTokenRotated = kPerTokenSplitIntoPairsRotated.view(kPerToken.shape)
 
             qkPerToken = torch.matmul(qPerTokenRotated, kPerTokenRotated.T) / (128) ** 0.5
-            mask = torch.full((len(tokenEmbeddingsUnnormalized), len(tokenEmbeddingsUnnormalized)), float("-inf"))
+            mask = torch.full((len(tokenEmbeddingsUnnormalized), len(tokenEmbeddingsUnnormalized)), float("-inf"),device=device)
             mask = torch.triu(mask, diagonal=1)
-            mask = mask.to(device)
             qkPerTokenAfterMasking = qkPerToken + mask
-            qkPerTokenAfterMaskingAfterSoftmax = torch.nn.functional.softmax(qkPerTokenAfterMasking, dim=1).to(
-                torch.bfloat16)
+            qkPerTokenAfterMaskingAfterSoftmax = torch.nn.functional.softmax(qkPerTokenAfterMasking, dim=1).to(torch.bfloat16)
             qkvAttention = torch.matmul(qkPerTokenAfterMaskingAfterSoftmax, vPerToken)
             qkvAttentionStore.append(qkvAttention)
 
@@ -399,8 +416,8 @@ def main():
         w2 = model[f"layers.{layer}.feed_forward.w2.weight"]
         w3 = model[f"layers.{layer}.feed_forward.w3.weight"]
         outputAfterFeedforward = torch.matmul(
-            torch.nn.functional.silu(torch.matmul(embeddingAfterEditNormalized, w1.T)) * torch.matmul(
-                embeddingAfterEditNormalized, w3.T), w2.T)
+            torch.nn.functional.silu(torch.matmul(embeddingAfterEditNormalized, w1.T)) *
+            torch.matmul(embeddingAfterEditNormalized, w3.T), w2.T)
         finalEmbedding = embeddingAfterEdit + outputAfterFeedforward
 
     #32
@@ -422,8 +439,6 @@ def main():
     top5Result = getTopNNextTokens(logits,tokenizer,5)
     for token in top5Result:
         print(f"Token: <<[{token}]>>")
-
-
 
 
 
