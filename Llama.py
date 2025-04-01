@@ -419,9 +419,9 @@ def main():
     print(f"Guessed next token:{decoded}\n")
 
     #35 Most possible 5 outcome as next token.
-    top5Results = getTopNNextTokens(logits,tokenizer,5)
-    for token,prob in top5Results:
-        print(f"Token: <{token}> with the probabilty of: <{prob:.5f}>")
+    top5Result = getTopNNextTokens(logits,tokenizer,5)
+    for token in top5Result:
+        print(f"Token: <<[{token}]>>")
 
 
 
