@@ -3,6 +3,7 @@ import torch
 import json
 import matplotlib.pyplot as plt
 import platform
+import torch.nn.functional as F
 
 from torch.nn.functional import rms_norm
 from torch.utils.backcompat import keepdim_warning
@@ -10,15 +11,11 @@ from tiktoken.load import load_tiktoken_bpe
 from pathlib import Path
 
 
-def RmsNorm(tensor, normWeights,device):
-    rms = torch.rsqrt(tensor.pow(2).mean(-1, keepdim=True) + 1e-5).to(device)
-    return tensor * rms * normWeights
 
-"""
-def RmsNorm(tensor,normWeights):
-    return (tensor * torch.rsqrt(tensor.pow(2).mean(-1,keepdim=True)))
-"""
-
+def RmsNorm(tensor, normWeights, eps):
+    normWeights = normWeights.to(tensor.device)
+    norm = torch.rsqrt(tensor.pow(2).mean(-1, keepdim=True) + eps)
+    return tensor * norm * normWeights
 
 
 def displayQkHeatmap(qkPerToken,promptSplitAsTokens):
@@ -35,6 +32,13 @@ def displayQkHeatmap(qkPerToken,promptSplitAsTokens):
 
 
 
+def getTopNNextTokens(logits,tokenizer,N=5):
+    probabilities = F.log_softmax(logits,dim=-1)
+    topProbabilities, topIndices = torch.topk(probabilities,N)
+    topTokens = [tokenizer.decode([idx.item()]) for idx in topIndices]
+    return list(zip(topTokens,topProbabilities.tolist()))
+
+
 
 def main():
 
@@ -43,6 +47,7 @@ def main():
     modelPath = r"llama\checkpoints\Llama3.2-1B"
     currentOS = platform.system()
 
+    print("\n")
     print("|---------------------|")
     print("|LLAMA3.2 FROM SCRATCH|")
     print("|_____________________|")
@@ -71,7 +76,7 @@ def main():
     )
 
     #2
-    word = tokenizer.decode(tokenizer.encode("hello world!"))
+    word = tokenizer.decode(tokenizer.encode("hello world!\n"))
     print("\n"+word)
 
 
@@ -126,7 +131,7 @@ def main():
     #8 RMS
 
     #9 First layer of transformer
-    tokenEmbeddings = RmsNorm(tokenEmbeddingsUnnormalized,model["layers.0.attention_norm.weight"])
+    tokenEmbeddings = RmsNorm(tokenEmbeddingsUnnormalized,model["layers.0.attention_norm.weight"],1e-5)
     print(tokenEmbeddings.shape)
 
 
@@ -407,11 +412,19 @@ def main():
 
     #34
     logits = torch.matmul(finalEmbedding[-1],model["output.weight"].T)
-    print("Logits Shape: " + str(logits.shape))
+    print("\nLogits Shape: " + str(logits.shape))
     nextToken = torch.argmax(logits,dim = -1)
     print("Next token: " + str(nextToken))
     decoded = tokenizer.decode([nextToken.item()])
-    print(f"Guessed next token:{decoded}")
+    print(f"Guessed next token:{decoded}\n")
+
+    #35 Most possible 5 outcome as next token.
+    top5Results = getTopNNextTokens(logits,tokenizer,5)
+    for token,prob in top5Results:
+        print(f"Token: <{token}> with the probabilty of: <{prob:.5f}>")
+
+
+
 
 
 
