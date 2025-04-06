@@ -1,3 +1,5 @@
+import time
+
 import tiktoken
 import torch
 import json
@@ -12,12 +14,14 @@ from tiktoken.load import load_tiktoken_bpe
 from pathlib import Path
 
 
-def generateContinousStream(model, initial_tokens, config, tokenizer, max_new_tokens, device):
+def update_line(text):
+    sys.stdout.write('\r' + text + ' ' * 10)  # padding clears leftover chars
+    sys.stdout.flush()
 
+def generateSequenceStream(model, initial_tokens, config, tokenizer, max_new_tokens, device):
     tokens = initial_tokens.clone().to(device)
     generated_text = tokenizer.decode(tokens.tolist())
-    spinner = ['|', '/', '-', '\\']
-    sys.stdout.write("\rGenerated tokens: " + generated_text)
+    time.sleep(0.5)
     sys.stdout.flush()
 
     dim = config["dim"]
@@ -27,24 +31,22 @@ def generateContinousStream(model, initial_tokens, config, tokenizer, max_new_to
     rope_theta = config["rope_theta"]
     head_dim = dim // n_heads
 
+
     for i in range(max_new_tokens):
         embeddingLayer = torch.nn.Embedding(config["vocab_size"], dim).to(device)
         embeddingLayer.weight.data.copy_(model["tok_embeddings.weight"].to(device))
         tokenEmbeddingsUnnormalized = embeddingLayer(tokens).to(torch.bfloat16)
         seqLen = tokens.shape[0]
-        freqs_cis = precomputeFreqsCis(head_dim, seqLen, device, rope_theta)
+        freqsCis = precomputeFreqsCis(head_dim, seqLen, device, rope_theta)
         finalEmbedding = tokenEmbeddingsUnnormalized
 
         for layer in range(n_layers):
             qkvAttentionStore = []
             weightAttentionNorm = model[f"layers.{layer}.attention_norm.weight"].to(device)
             layerEmbeddingNorm = RmsNorm(finalEmbedding, weightAttentionNorm, 1e-5)
-            qLayer = model[f"layers.{layer}.attention.wq.weight"].to(device)
-            qLayer = qLayer.view(n_heads, -1, dim)
-            kLayer = model[f"layers.{layer}.attention.wk.weight"].to(device)
-            kLayer = kLayer.view(n_kv_heads, -1, dim)
-            vLayer = model[f"layers.{layer}.attention.wv.weight"].to(device)
-            vLayer = vLayer.view(n_kv_heads, -1, dim)
+            qLayer = model[f"layers.{layer}.attention.wq.weight"].to(device).view(n_heads, -1, dim)
+            kLayer = model[f"layers.{layer}.attention.wk.weight"].to(device).view(n_kv_heads, -1, dim)
+            vLayer = model[f"layers.{layer}.attention.wv.weight"].to(device).view(n_kv_heads, -1, dim)
 
             for head in range(n_heads):
                 qLayerHead = qLayer[head]
@@ -55,15 +57,15 @@ def generateContinousStream(model, initial_tokens, config, tokenizer, max_new_to
                 vPerToken = torch.matmul(layerEmbeddingNorm, vLayerHead.T)
                 qPerTokenSplitIntoPairs = qPerToken.float().view(qPerToken.shape[0], -1, 2)
                 qPerTokenAsComplexNumbers = torch.view_as_complex(qPerTokenSplitIntoPairs)
-                freqs_q = freqs_cis[:qPerToken.shape[0], :].to(qPerToken.device)
-                qPerTokenSplitIntoPairsRotated = torch.view_as_real(qPerTokenAsComplexNumbers * freqs_q)
+                freqsQ = freqsCis[:qPerToken.shape[0], :].to(qPerToken.device)
+                qPerTokenSplitIntoPairsRotated = torch.view_as_real(qPerTokenAsComplexNumbers * freqsQ)
                 qPerTokenRotated = qPerTokenSplitIntoPairsRotated.view(qPerToken.shape)
                 kPerTokenSplitIntoPairs = kPerToken.float().view(kPerToken.shape[0], -1, 2)
                 kPerTokenAsComplexNumbers = torch.view_as_complex(kPerTokenSplitIntoPairs)
-                freqs_k = freqs_cis[:kPerToken.shape[0], :].to(kPerToken.device)
+                freqs_k = freqsCis[:kPerToken.shape[0], :].to(kPerToken.device)
                 kPerTokenSplitIntoPairsRotated = torch.view_as_real(kPerTokenAsComplexNumbers * freqs_k)
                 kPerTokenRotated = kPerTokenSplitIntoPairsRotated.view(kPerToken.shape)
-                qkPerToken = torch.matmul(qPerTokenRotated, kPerTokenRotated.T) / (128) ** 0.5
+                qkPerToken = torch.matmul(qPerTokenRotated, kPerTokenRotated.T) / (128)**0.5
                 mask = torch.full((seqLen, seqLen), float("-inf"), device=device)
                 mask = torch.triu(mask, diagonal=1)
                 qkPerTokenAfterMasking = qkPerToken + mask
@@ -88,10 +90,10 @@ def generateContinousStream(model, initial_tokens, config, tokenizer, max_new_to
         tokens = torch.cat([tokens, torch.tensor([nextTokenScalar], device=device)], dim=0)
         new_char = tokenizer.decode([nextTokenScalar])
         generated_text += new_char
-        sys.stdout.write("\rGenerated tokens: " + generated_text + " " + spinner[i % len(spinner)])
+
+        sys.stdout.write("\rGenerated Sequence: " + generated_text)
         sys.stdout.flush()
     print()
-
     return tokens
 
 
@@ -515,8 +517,13 @@ def main():
     #34
     logits = torch.matmul(finalEmbedding[-1],model["output.weight"].T)
     print("\nLogits Shape: " + str(logits.shape))
-    generatedTokens = generateContinousStream(model, tokens, config, tokenizer, max_new_tokens=25, device=device)
-    print("\nGenerated sequence:", tokenizer.decode(generatedTokens.tolist()))
+    generated_tokens = generateSequenceStream(model, tokens, config, tokenizer, max_new_tokens=50
+                                              , device=device)
+    generated_text = tokenizer.decode(generated_tokens.tolist())
+    update_line("Generated Sequence: " + generated_text)
+
+
+
 
     """
     #For next token OR 5 possible next tokens uncomment this code.
