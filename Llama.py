@@ -1,8 +1,8 @@
 import time
-
 import tiktoken
 import torch
 import json
+import os
 import sys
 import matplotlib.pyplot as plt
 import platform
@@ -14,15 +14,46 @@ from tiktoken.load import load_tiktoken_bpe
 from pathlib import Path
 
 
-def update_line(text):
-    sys.stdout.write('\r' + text + ' ' * 10)  # padding clears leftover chars
+
+def clearPreviousOutput(text_length=None):
+
+    if text_length is None:
+        sys.stdout.write('\r\033[K')
+        sys.stdout.flush()
+        return
+
+    try:
+        terminal_width = os.get_terminal_size().columns
+        lines_needed = max(1, (text_length // terminal_width) + 1)
+        sys.stdout.write('\r')
+
+        for _ in range(lines_needed):
+            sys.stdout.write('\033[K')
+            sys.stdout.write('\033[1A')
+
+        sys.stdout.write('\033[{}B'.format(lines_needed))
+        sys.stdout.write('\r')
+        sys.stdout.flush()
+
+    except (AttributeError, OSError):
+        sys.stdout.write('\r\033[K')
+        sys.stdout.flush()
+
+
+def updateLine(text, previous_length=0):
+    if previous_length > 0:
+        clearPreviousOutput(previous_length)
+    sys.stdout.write('\r' + text)
     sys.stdout.flush()
+    return len(text)
+
 
 def generateSequenceStream(model, initial_tokens, config, tokenizer, max_new_tokens, device):
     tokens = initial_tokens.clone().to(device)
     generated_text = tokenizer.decode(tokens.tolist())
-    time.sleep(0.5)
-    sys.stdout.flush()
+
+    display_text = "Generated Sequence: " + generated_text
+    prev_length = updateLine(display_text)
 
     dim = config["dim"]
     n_layers = config["n_layers"]
@@ -30,7 +61,6 @@ def generateSequenceStream(model, initial_tokens, config, tokenizer, max_new_tok
     n_kv_heads = config["n_kv_heads"]
     rope_theta = config["rope_theta"]
     head_dim = dim // n_heads
-
 
     for i in range(max_new_tokens):
         embeddingLayer = torch.nn.Embedding(config["vocab_size"], dim).to(device)
@@ -65,11 +95,12 @@ def generateSequenceStream(model, initial_tokens, config, tokenizer, max_new_tok
                 freqs_k = freqsCis[:kPerToken.shape[0], :].to(kPerToken.device)
                 kPerTokenSplitIntoPairsRotated = torch.view_as_real(kPerTokenAsComplexNumbers * freqs_k)
                 kPerTokenRotated = kPerTokenSplitIntoPairsRotated.view(kPerToken.shape)
-                qkPerToken = torch.matmul(qPerTokenRotated, kPerTokenRotated.T) / (128)**0.5
+                qkPerToken = torch.matmul(qPerTokenRotated, kPerTokenRotated.T) / (128) ** 0.5
                 mask = torch.full((seqLen, seqLen), float("-inf"), device=device)
                 mask = torch.triu(mask, diagonal=1)
                 qkPerTokenAfterMasking = qkPerToken + mask
-                qkPerTokenAfterMaskingAfterSoftmax = torch.nn.functional.softmax(qkPerTokenAfterMasking, dim=1).to(torch.bfloat16)
+                qkPerTokenAfterMaskingAfterSoftmax = torch.nn.functional.softmax(qkPerTokenAfterMasking, dim=1).to(
+                    torch.bfloat16)
                 qkvAttention = torch.matmul(qkPerTokenAfterMaskingAfterSoftmax, vPerToken)
                 qkvAttentionStore.append(qkvAttention)
             stackedQkvAttention = torch.cat(qkvAttentionStore, dim=-1)
@@ -81,7 +112,9 @@ def generateSequenceStream(model, initial_tokens, config, tokenizer, max_new_tok
             w1 = model[f"layers.{layer}.feed_forward.w1.weight"].to(device)
             w2 = model[f"layers.{layer}.feed_forward.w2.weight"].to(device)
             w3 = model[f"layers.{layer}.feed_forward.w3.weight"].to(device)
-            outputAfterFeedforward = torch.matmul(torch.nn.functional.silu(torch.matmul(embeddingAfterEditNormalized, w1.T)) * torch.matmul(embeddingAfterEditNormalized, w3.T), w2.T)
+            outputAfterFeedforward = torch.matmul(
+                torch.nn.functional.silu(torch.matmul(embeddingAfterEditNormalized, w1.T)) * torch.matmul(
+                    embeddingAfterEditNormalized, w3.T), w2.T)
             finalEmbedding = embeddingAfterEdit + outputAfterFeedforward
 
         finalEmbedding = RmsNorm(finalEmbedding, model["norm.weight"].to(device), 1e-5)
@@ -91,12 +124,11 @@ def generateSequenceStream(model, initial_tokens, config, tokenizer, max_new_tok
         new_char = tokenizer.decode([nextTokenScalar])
         generated_text += new_char
 
-        sys.stdout.write("\rGenerated Sequence: " + generated_text)
-        sys.stdout.flush()
+        display_text = "Generated Sequence: " + generated_text
+        prev_length = updateLine(display_text, prev_length)
+
     print()
     return tokens
-
-
 
 def precomputeFreqsCis(head_dim, seq_len, device, rope_theta):
     dim_rotary = head_dim // 2
@@ -517,10 +549,10 @@ def main():
     #34
     logits = torch.matmul(finalEmbedding[-1],model["output.weight"].T)
     print("\nLogits Shape: " + str(logits.shape))
-    generated_tokens = generateSequenceStream(model, tokens, config, tokenizer, max_new_tokens=50
+    generated_tokens = generateSequenceStream(model, tokens, config, tokenizer, max_new_tokens=20
                                               , device=device)
     generated_text = tokenizer.decode(generated_tokens.tolist())
-    update_line("Generated Sequence: " + generated_text)
+    updateLine("Generated Sequence: " + generated_text)
 
 
 

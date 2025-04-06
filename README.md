@@ -47,5 +47,14 @@ as "john" shown in below image.
 ![prompt1Output.png](OutputImages/prompt1Output.png)
 
 
+For multi token generation for the entry "Meta's Llama models are"
+
+![multiTokenOutput.png](OutputImages/multiTokenOutput.png)
+
+The output is "**Generated Sequence: <|begin_of_text|>Meta's Llama models are a great way to get started with GPT-3. This tutorial will show you how to use the Llama models to generate text." 
+as shown in the image**.
+
+![multiTokenOutputSequence.png](OutputImages/multiTokenOutputSequence.png)
+
 ## Warning & Issues
 The code & repository is still under development, so sometimes it could give unreasonable results like numbers. Beware of these when experimenting.
