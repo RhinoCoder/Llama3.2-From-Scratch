@@ -13,7 +13,7 @@
 **5.** Enjoy experimenting & have fun. (Literally)
 
 
-**Architecture**
+## Architecture
 
 ![llama321BPicture.png](OutputImages/llama321BPicture.png)
 
@@ -21,7 +21,7 @@
 Llama3.2 1B is a 16 layer decoder transformer with 2048 embedding
 dimension, 8192 feed forward dimension and 32 attention heads model. By combining
 repeated attention feed forward blocks,RMSNorm layers and a final linear projection the model
-learns to generate text autoregressively over 128k+ tokens of context.
+learns to generate text autoregressively over 128k+ tokens of context length.
 Raw text is converted into integer IDs by a Byte Pair Encoding tokenizer. Each
 ID corresponds to a subword or a special token. Embedding
 dimension is 2048 which means each token ID is mapped to a learnable
